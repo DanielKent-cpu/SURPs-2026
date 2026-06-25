@@ -1,0 +1,476 @@
+#include <Wire.h>
+#include <Adafruit_ADS1X15.h>
+#include <Adafruit_MCP4725.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SH110X.h>
+#include "EC11.hpp"
+
+Adafruit_ADS1115 ads;
+Adafruit_MCP4725 dac;
+EC11 encoder;
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_ADDR 0x3C
+#define DEMO_INTERRUPTS 0
+
+#if DEMO_INTERRUPTS
+
+void pinDidChange() {
+  encoder.checkPins(digitalRead(encoderPinA), digitalRead(encoderPinB));
+}
+
+void prepare() {
+  attachInterrupt(0, pinDidChange, CHANGE);
+  attachInterrupt(1, pinDidChange, CHANGE);
+}
+
+#else
+
+const int encoderPinA = 3;
+const int encoderPinB = 4;
+
+// Encoder pins
+const int encoderButton = 5;  // PSH
+const int Confirm = 6; // CON
+const int Back = 7; // BAK
+
+void prepare() {
+}
+
+#endif
+
+Adafruit_SH1106G display(
+  SCREEN_WIDTH,
+  SCREEN_HEIGHT,
+  &Wire,
+  -1
+);
+
+//========== Main Menu =========
+const char* MainMenuItems[] = {
+  "Page 1",
+  "Page 2"
+};
+
+//========== Sub Menu 1 ==========
+const char* SubMenu1Items[] = {
+  "Tick Count",
+  "Input Voltages",
+  "Blank Page",
+  "Blank Page"
+};
+
+//========== Sub Menu 2 ==========
+const char* SubMenu2Items[] = {
+  "Blank Page",
+  "Blank Page",
+  "Blank Page",
+  "Blank Page"
+};
+
+const int MainMenuSize = 2;
+
+const int SubMenu1Size = 4;
+const int SubMenu2Size = 4;
+
+int menuIndex = 0;
+int submenu1Index = 0;
+int submenu2Index = 0;
+
+bool inMainMenu = true;
+bool inSubMenu1 = false;
+bool inSubMenu2 = false;
+bool inPage1 = false;
+bool inPage2 = false;
+bool inPage3 = false;
+bool inPage4 = false;
+bool inPage5 = false;
+bool inPage6 = false;
+bool inPage7 = false;
+bool inPage8 = false;
+
+void setup()
+{
+  Wire.begin();
+  Serial.begin(115200);
+
+  if(!ads.begin(0x48,&Wire ))
+  {
+    Serial.println("ADS not connected");
+    while (1);
+  }
+
+  ads.setGain(GAIN_TWOTHIRDS);
+
+  if (!dac.begin(0x60, &Wire))
+  {
+    Serial.println("DAC not connected");
+    while (1);
+  }
+ 
+  Serial.println(F("ADC-DAC system connected"));
+
+  Serial.println(F("Encoder Ready"));
+
+  Serial.println(F("Rotate knob"));
+
+  Serial.println(F("Starting OLED"));
+  if(!display.begin(OLED_ADDR, -1))
+  {
+    Serial.println("OLED Failed");
+    while(1);
+  }
+  Serial.println(F("OLED Working"));
+
+  // Use internal pullup resistors
+  pinMode(encoderPinA, INPUT_PULLUP);
+  pinMode(encoderPinB, INPUT_PULLUP);
+  pinMode(encoderButton, INPUT_PULLUP);
+  pinMode(Confirm, INPUT_PULLUP);
+  pinMode(Back, INPUT_PULLUP);
+
+  display.clearDisplay();
+  display.display();
+
+  updateOLED(); 
+  prepare();
+  Serial.println(F("Initializations Finished"));
+}
+
+static int value = 0;
+
+void loop()
+{
+  // Read ADS1115 channel A0 and A1
+  int16_t adcRawA0 = ads.readADC_SingleEnded(0);
+  int16_t adcRawA1 = ads.readADC_SingleEnded(1);
+
+  // Convert ADC reading to volts
+  float inputVoltageA0 = adcRawA0 * 0.1875f / 1000.0f;
+  float inputVoltageA1 = adcRawA1 * 0.1875f / 1000.0f;
+
+  // Limit to expected range
+  if (inputVoltageA0 < 0.0f)
+      inputVoltageA0 = 0.0f;
+
+  if (inputVoltageA0 > 5.0f)
+        inputVoltageA0 = 5.0f;
+
+  // Convert voltage to 12-bit DAC value
+  uint16_t dacValue = (uint16_t)((inputVoltageA0 / 5.0f) * 4095.0f);
+  //dacValue = 4095;
+
+  // Output through DAC
+  dac.setVoltage(dacValue, false);
+ 
+  // Debug information
+  Serial.print(F("ADC Raw A0: "));
+  Serial.print(adcRawA0);
+ 
+  Serial.print(F("   Vin A0: "));
+  Serial.print(inputVoltageA0, 4);
+
+  Serial.print(F(" V   DAC: "));
+  Serial.print(dacValue);
+
+  Serial.print(F("   Vout: "));
+  Serial.print(((dacValue * 5.0) / 4095.0), 4);
+  Serial.print(F(" V"));
+
+  Serial.print(F("  ADC Raw A1: "));
+  Serial.print(adcRawA1);
+
+  Serial.print(F("  Vin A1: "));
+  Serial.print(inputVoltageA1, 4);
+  Serial.println(F(" V"));
+
+  delay(50);
+  updateOLED();
+  handleEncoder();
+  //handleButton();
+}
+
+void updateOLED()
+{
+  int16_t adcRawA0 = ads.readADC_SingleEnded(0);
+  int16_t adcRawA1 = ads.readADC_SingleEnded(1);
+
+  float inputVoltageA0 = adcRawA0 * 0.1875f / 1000.0f;
+  float inputVoltageA1 = adcRawA1 * 0.1875f / 1000.0f;
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SH110X_WHITE);
+
+  if (inMainMenu)
+  //=========== Main Menu Layout ============
+  {
+    display.setCursor(0,0);
+    display.println(F("Main Menu"));
+
+    for (int i = 0; i < MainMenuSize; i++)
+    {
+      display.setCursor(0, 15 + i * 12);
+
+      if (i == menuIndex)
+        display.print(F("> "));
+      else
+        display.print(F(" "));
+
+      display.println(MainMenuItems[i]);
+    }
+  }
+  else
+  {
+    //========== Sub Menu 1 Layout ============
+    
+    if (inSubMenu1)
+    {
+      display.setCursor(0,0);
+      display.println(F("Menu Page 1"));
+      display.println("--------------");
+
+      for (int a = 0; a < SubMenu1Size; a++)
+      {
+        display.setCursor(0, 15 + a * 12);
+
+        if (a == submenu1Index)
+        {
+          display.print(F("> "));
+        }
+        else
+        {
+          display.print(F("  "));
+        }
+
+        display.println(SubMenu1Items[a]);
+      }
+        
+    }
+    else if (inSubMenu2)
+    {
+      //========= Sub Menu 2  Layout =========
+      display.setCursor(0,0);
+      display.println(F("Menu Page 2"));
+      display.println("---------------");
+
+      for (int b = 0; b < SubMenu2Size; b++)
+      {
+        display.setCursor(0, 15 + b * 12);
+
+        if (b == submenu2Index)
+        display.print(F("> "));
+        else
+        display.print(F("  "));
+
+        display.println(SubMenu1Items[b]);
+      }
+    }
+    else if (inPage1)
+    {
+      EC11Event e;
+      if (encoder.read(&e)) 
+      {
+        // OK, got an event waiting to be handled.
+    
+        if (e.type == EC11Event::StepCW) 
+        {
+          value -= e.count;
+        }   
+          else 
+        {
+          value += e.count;
+        }
+      }
+      display.clearDisplay();
+      display.setCursor(0,0);
+      display.print(F("Ticks: "));
+      display.println(value);
+    }
+    else if (inPage2)
+    {
+      display.println(F("A0 Voltage Input: "));
+      display.print(inputVoltageA0, 4);
+      display.println(F(" V"));
+      display.println(F("A1 Voltage Input: "));
+      display.print(inputVoltageA1, 4);
+      display.println(F(" V"));
+    }
+    else if (inPage3)
+    {
+      display.print(F("Blank Page"));      
+    }
+    else if (inPage4)
+    {
+      display.print(F("Blank Page"));
+    }
+  } 
+  
+  #if DEMO_INTERRUPTS
+
+  // Wait quite some time to demonstrate that we can check for events fairly infrequently and still not miss them.
+  delay(10);
+  
+  #else
+
+  // With polling-style pin checking we can still read infrequently, but we need to poll the pins often enough.
+  for (int i = 0; i < 20; i++) 
+  {
+    encoder.checkPins(digitalRead(encoderPinA), digitalRead(encoderPinB));
+    delay(1);
+  }
+  
+  #endif
+  #if DEMO_INTERRUPTS
+
+  // Wait quite some time to demonstrate that we can check for events fairly infrequently and still not miss them.
+  delay(10);
+  
+  #else
+
+  // With polling-style pin checking we can still read infrequently, but we need to poll the pins often enough.
+  for (int a = 0; a < 20; a++) 
+  {
+    encoder.checkPins(digitalRead(encoderPinA), digitalRead(encoderPinB));
+    delay(1);
+  }
+  
+  #endif
+  #if DEMO_INTERRUPTS
+
+  // Wait quite some time to demonstrate that we can check for events fairly infrequently and still not miss them.
+  delay(10);
+  
+  #else
+
+  // With polling-style pin checking we can still read infrequently, but we need to poll the pins often enough.
+  for (int b = 0; b < 20; b++) 
+  {
+    encoder.checkPins(digitalRead(encoderPinA), digitalRead(encoderPinB));
+    delay(1);
+  }
+  
+  #endif
+  
+  display.display();
+}
+
+void handleEncoder()
+{
+  if (inMainMenu)
+  {
+    EC11Event e;
+    if (encoder.read(&e)) 
+    {
+      // OK, got an event waiting to be handled.
+
+      if (e.type == EC11Event::StepCW) 
+      {
+        menuIndex -= e.count;
+      } 
+      else 
+      {
+        menuIndex += e.count;
+      }
+      if (menuIndex < 0) menuIndex = MainMenuSize - 1;
+      if (menuIndex >= MainMenuSize) menuIndex = 0;
+    }
+    if (digitalRead(Confirm) == LOW)
+    {
+      if (menuIndex == 0)
+      {
+        inMainMenu = false;
+        inSubMenu1 = true;
+        inSubMenu2 = false;
+      }
+      else if (menuIndex == 1)
+      {
+        inMainMenu = false;
+        inSubMenu1 = false;
+        inSubMenu2 = true;
+      }
+      delay(200);
+    }
+  }
+  if (digitalRead(Back) == LOW)
+  {
+    if (!inMainMenu)
+    {
+      if (inSubMenu1)
+      {
+        inSubMenu1 = false;
+        inMainMenu = true;
+      }
+
+      if (inSubMenu2)
+      {
+        inSubMenu2 = false;
+        inMainMenu = true; 
+      }
+    }
+  }
+  if (inSubMenu1)
+  {
+    EC11Event e;
+    if (encoder.read(&e)) 
+    {
+      // OK, got an event waiting to be handled.
+
+      if (e.type == EC11Event::StepCW) 
+      {
+        submenu1Index -= e.count;
+      } 
+      else 
+      {
+        submenu1Index += e.count;
+      }
+      if (submenu1Index < 0) submenu1Index = SubMenu1Size - 1;
+      if (submenu1Index >= SubMenu1Size) submenu1Index = 0;
+    }
+    if (digitalRead(Confirm) == LOW)
+    {
+      if (submenu1Index == 0)
+      {
+        inMainMenu = false;
+        inSubMenu1 = false;
+        inPage1 = true;
+        
+      }
+      delay(200);
+    }
+  }
+  if (inSubMenu2)
+  {
+    EC11Event e;
+    if (encoder.read(&e)) 
+    {
+      // OK, got an event waiting to be handled.
+
+      if (e.type == EC11Event::StepCW) 
+      {
+        submenu2Index -= e.count;
+      } 
+      else 
+      {
+        submenu2Index += e.count;
+      }
+      if (submenu2Index < 0) submenu2Index = SubMenu2Size - 1;
+      if (submenu2Index >= SubMenu2Size) submenu2Index = 0;
+    }
+    if (digitalRead(Confirm) == LOW)
+    {
+      if (submenu2Index == 0)
+      {
+        inMainMenu = false;
+        inSubMenu2 = false;
+        inPage5 = true;
+
+        
+        delay(200);
+      }
+    }
+  }
+  updateOLED();
+}
+
