@@ -1,0 +1,334 @@
+#include <Wire.h>
+#include <Adafruit_ADS1X15.h>
+#include <Adafruit_MCP4725.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SH110X.h>
+#include "EC11.hpp"
+
+Adafruit_ADS1115 ads;
+Adafruit_MCP4725 dac;
+EC11 encoder;
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_ADDR 0x3C
+#define DEMO_INTERRUPTS 0
+
+#if DEMO_INTERRUPTS
+
+void pinDidChange() {
+  encoder.checkPins(digitalRead(encoderPinA), digitalRead(encoderPinB));
+}
+
+void prepare() {
+  attachInterrupt(0, pinDidChange, CHANGE);
+  attachInterrupt(1, pinDidChange, CHANGE);
+}
+
+#else
+
+const int encoderPinA = 3;
+const int encoderPinB = 4;
+
+// Encoder pins
+const int encoderButton = 5;  // PSH
+const int Confirm = 6; // CON
+const int Back = 7; // BAK
+
+void prepare() {
+}
+
+#endif // #if DEMO_INTERRUPTS
+
+Adafruit_SH1106G display(
+    SCREEN_WIDTH,
+    SCREEN_HEIGHT,
+    &Wire,
+    -1
+);
+
+//=========== MENU =============
+const char* menuItems[] = {
+  "Tick Counter",
+  "Input Voltages",
+  "Blank Page",
+  "Blank Page"
+};
+
+const int menuSize = 4;
+
+int menuIndex = 0;
+bool inSubMenu = false;
+
+uintptr_t address = &Wire;
+
+void setup()
+{
+  Wire.begin();
+  Serial.begin(115200);
+
+  if(!ads.begin(0x48,&Wire ))
+  {
+    Serial.println("ADS not connected");
+    while (1);
+  }
+
+  ads.setGain(GAIN_TWOTHIRDS);
+
+  if (!dac.begin(0x60, &Wire))
+  {
+    Serial.println("DAC not connected");
+    while (1);
+  }
+ 
+  Serial.println(F("ADC-DAC system connected"));
+
+  Serial.println(F("Encoder Ready"));
+
+  Serial.println(F("Rotate knob"));
+
+  Serial.println(F("Starting OLED"));
+  if(!display.begin(OLED_ADDR, -1))
+  {
+    Serial.println("OLED Failed");
+    while(1);
+  }
+  Serial.println(F("OLED Working"));
+
+  // Use internal pullup resistors
+  pinMode(encoderPinA, INPUT_PULLUP);
+  pinMode(encoderPinB, INPUT_PULLUP);
+  pinMode(encoderButton, INPUT_PULLUP);
+  pinMode(Confirm, INPUT_PULLUP);
+  pinMode(Back, INPUT_PULLUP);
+
+  display.clearDisplay();
+  display.display();
+
+  updateOLED(); 
+  prepare();
+  Serial.println(F("Initializations Finished"));
+}
+
+static int value = 0;
+
+void loop()
+{
+  // Read ADS1115 channel A0 and A1
+  int16_t adcRawA0 = ads.readADC_SingleEnded(0);
+  int16_t adcRawA1 = ads.readADC_SingleEnded(1);
+
+  // Convert ADC reading to volts
+  float inputVoltageA0 = adcRawA0 * 0.1875f / 1000.0f;
+  float inputVoltageA1 = adcRawA1 * 0.1875f / 1000.0f;
+
+  // Limit to expected range
+  if (inputVoltageA0 < 0.0f)
+      inputVoltageA0 = 0.0f;
+
+  if (inputVoltageA0 > 5.0f)
+        inputVoltageA0 = 5.0f;
+
+  // Convert voltage to 12-bit DAC value
+  uint16_t dacValue = (uint16_t)((inputVoltageA0 / 5.0f) * 4095.0f);
+  //dacValue = 4095;
+
+  // Output through DAC
+  dac.setVoltage(dacValue, false);
+ 
+  // Debug information
+  Serial.print(F("ADC Raw A0: "));
+  Serial.print(adcRawA0);
+ 
+  Serial.print(F("   Vin A0: "));
+  Serial.print(inputVoltageA0, 4);
+
+  Serial.print(F(" V   DAC: "));
+  Serial.print(dacValue);
+
+  Serial.print(F("   Vout: "));
+  Serial.print(((dacValue * 5.0) / 4095.0), 4);
+  Serial.print(F(" V"));
+
+  Serial.print(F("  ADC Raw A1: "));
+  Serial.print(adcRawA1);
+
+  Serial.print(F("  Vin A1: "));
+  Serial.print(inputVoltageA1, 4);
+  Serial.println(F(" V"));
+
+  delay(50);
+  updateOLED();
+  handleEncoder();
+  handleButton();
+}
+
+void updateOLED()
+{
+  //Read Input Voltages
+  int16_t adcRawA0 = ads.readADC_SingleEnded(0);
+  int16_t adcRawA1 = ads.readADC_SingleEnded(1);
+  
+  // Convert ADC reading to volts
+  float inputVoltageA0 = adcRawA0 * 0.1875f / 1000.0f;
+  float inputVoltageA1 = adcRawA1 * 0.1875f / 1000.0f;
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SH110X_WHITE);
+
+  if (!inSubMenu)
+  {
+    // ===== MAIN MENU =====
+    display.setCursor(0, 0);
+    display.println(F("MAIN MENU"));
+
+    for (int i = 0; i < menuSize; i++)
+    {
+      display.setCursor(0, 15 + i * 12);
+
+      if (i == menuIndex)
+        display.print(F("> "));
+      else
+        display.print("  ");
+
+      display.println(menuItems[i]);
+    }
+  }
+  else
+  {
+    // ===== SUBMENU =====
+    display.setCursor(0, 0);
+    display.println(menuItems[menuIndex]);
+    display.println("----------------");
+
+    if (menuIndex == 0)
+    {
+      display.print(F("Ticks: "));
+      display.println(value);
+    }
+    else if (menuIndex == 1)
+    {
+      display.println(F("A0 Voltage Input: "));
+      display.print(inputVoltageA0, 4);
+      display.println(F(" V"));
+      display.println(F("A1 Voltage Input: "));
+      display.print(inputVoltageA1, 4);
+      display.println(F(" V"));
+    }
+    else if (menuIndex == 2)
+    {
+      display.print(F("Blank Page"));
+    }
+    else if (menuIndex == 3)
+    {
+      display.print(F("Blank Page"));
+    }
+  }
+
+  display.display();
+}
+
+void handleEncoder()
+{
+  {
+    if (!inSubMenu)
+    {
+      EC11Event e;
+      if (encoder.read(&e)) 
+      {
+        // OK, got an event waiting to be handled.
+    
+        if (e.type == EC11Event::StepCW) 
+        {
+          menuIndex -= e.count;
+        } 
+        else 
+        {
+          menuIndex += e.count;
+        }
+        if (menuIndex < 0) menuIndex = menuSize - 1;
+        if (menuIndex >= menuSize) menuIndex = 0;
+      }
+    }
+    else
+    {
+      if (menuIndex == 0)
+      {
+        EC11Event e;
+        if (encoder.read(&e)) 
+        {
+          // OK, got an event waiting to be handled.
+    
+          if (e.type == EC11Event::StepCW) 
+          {
+            value -= e.count;
+          }   
+            else 
+          {
+            value += e.count;
+          }
+          updateOLED();
+        }
+        Serial.print(F("  Tick Value: "));
+        Serial.println(value);
+
+        if (digitalRead(encoderButton) == LOW)
+        {
+          value = 0;
+          Serial.println(F("RESET"));
+          updateOLED();
+        }
+      }
+    }
+  }
+  
+#if DEMO_INTERRUPTS
+
+  // Wait quite some time to demonstrate that we can check for events fairly infrequently and still not miss them.
+  delay(100);
+  
+#else
+
+  // With polling-style pin checking we can still read infrequently, but we need to poll the pins often enough.
+  for (int i = 0; i < 200; i++) {
+    encoder.checkPins(digitalRead(encoderPinA), digitalRead(encoderPinB));
+    delay(1);
+  }
+  
+  #endif
+}
+
+void handleButton()
+{
+  // Detect press
+  if (digitalRead(Confirm) == LOW)
+  {
+    if (!inSubMenu)
+    {
+      // ENTER MENU ITEM
+      if (menuIndex == 1)
+      {
+        inSubMenu = false;
+      }
+
+      if (menuIndex == 2)
+      {
+        inSubMenu = false;
+      }
+
+      if (menuIndex == 3)
+      {
+        inSubMenu = false;
+      }
+
+      inSubMenu = true;
+    }
+    else
+    {
+      inSubMenu = false;
+    }
+
+    updateOLED();
+  }
+}
