@@ -1,0 +1,559 @@
+#include <Wire.h>
+#include <Adafruit_ADS1X15.h>
+#include <Adafruit_MCP4725.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SH110X.h>
+#include "EC11.hpp"
+
+Adafruit_ADS1115 ads;
+Adafruit_MCP4725 dac;
+EC11 encoder;
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_ADDR 0x3C
+#define DEMO_INTERRUPTS 0
+//#define Debug 0
+
+#if DEMO_INTERRUPTS
+
+void pinDidChange() {
+  encoder.checkPins(digitalRead(encoderPinA), digitalRead(encoderPinB));
+}
+
+void prepare() {
+  attachInterrupt(0, pinDidChange, CHANGE);
+  attachInterrupt(1, pinDidChange, CHANGE);
+}
+
+#else
+
+const int encoderPinA = 3;
+const int encoderPinB = 4;
+
+// Encoder pins
+const int encoderButton = 5;  // PSH
+const int Confirm = 6; // CON
+const int Back = 7; // BAK
+
+void prepare() {
+}
+
+#endif
+
+Adafruit_SH1106G display(
+  SCREEN_WIDTH,
+  SCREEN_HEIGHT,
+  &Wire,
+  -1
+);
+
+//========== Main Menu =========
+const char* MainMenuItems[] = {
+  "Page 1",
+  "Page 2"
+};
+
+//========== Sub Menu 1 ==========
+const char* SubMenu1Items[] = {
+  "Tick Count",
+  "Input Voltages",
+  "Pressure Input",
+  "Blank Page"
+};
+
+//========== Sub Menu 2 ==========
+const char* SubMenu2Items[] = {
+  "Blank Page",
+  "Blank Page",
+  "Blank Page",
+  "Blank Page"
+};
+
+const int MainMenuSize = 2;
+
+const int SubMenu1Size = 4;
+const int SubMenu2Size = 4;
+
+int menuIndex = 0;
+int submenu1Index = 0;
+int submenu2Index = 0;
+
+bool inMainMenu = true;
+bool inSubMenu1 = false;
+bool inSubMenu2 = false;
+bool inPage1 = false;
+bool inPage2 = false;
+bool inPage3 = false;
+bool inPage4 = false;
+bool inPage5 = false;
+bool inPage6 = false;
+bool inPage7 = false;
+bool inPage8 = false;
+
+bool previousConfirmState = HIGH;
+bool previousBackState = HIGH;
+bool ConfirmPress = false;
+bool BackPress = false;
+
+unsigned long lastDisplayUpdate = 0;
+
+int16_t adcRawA0 = 0;
+int16_t adcRawA1 = 0;
+float inputVoltageA0 = 0;
+float inputVoltageA1 = 0;
+
+void updateEncoderValue(EC11 &encoder, long &value)
+{
+  EC11Event e;
+  if (encoder.read(&e))
+  {
+    if (e.type == EC11Event::StepCW)
+    {
+      value -= e.count;
+    }
+    else
+    {
+      value += e.count;
+    }
+  }
+}
+
+//static int value = 0;
+long value = 0;
+
+void setup()
+{
+  Wire.begin();
+  Serial.begin(115200);
+
+  if(!ads.begin(0x48,&Wire ))
+  {
+    Serial.println("ADS not connected");
+    while (1);
+  }
+
+  ads.setGain(GAIN_TWOTHIRDS);
+
+  if (!dac.begin(0x60, &Wire))
+  {
+    Serial.println("DAC not connected");
+    while (1);
+  }
+ 
+  Serial.println(F("ADC-DAC system connected"));
+
+  Serial.println(F("Encoder Ready"));
+
+  Serial.println(F("Rotate knob"));
+
+  Serial.println(F("Starting OLED"));
+  if(!display.begin(OLED_ADDR, -1))
+  {
+    Serial.println("OLED Failed");
+    while(1);
+  }
+  Serial.println(F("OLED Working"));
+
+  // Use internal pullup resistors
+  pinMode(encoderPinA, INPUT_PULLUP);
+  pinMode(encoderPinB, INPUT_PULLUP);
+  pinMode(encoderButton, INPUT_PULLUP);
+  pinMode(Confirm, INPUT_PULLUP);
+  pinMode(Back, INPUT_PULLUP);
+
+  Serial.print(F("Pullups Working"));
+
+  display.clearDisplay();
+  Serial.print(F("Display Cleared"));
+  display.display();
+  Serial.print(F("Display Set"));
+
+  updateOLED(); 
+  Serial.print(F("OLED Updated"));
+  prepare();
+  Serial.println(F("Initializations Finished"));
+}
+
+void loop()
+{
+  ConfirmPress = false;
+  BackPress = false;
+
+  bool ConfirmState = digitalRead(Confirm);
+  if (previousConfirmState == HIGH &&
+  ConfirmState == LOW)
+  {
+    ConfirmPress = true;
+  }
+  ConfirmState = previousConfirmState;
+
+  bool BackState = digitalRead(Back);
+  if (previousBackState == HIGH &&
+  BackState == LOW)
+  {
+    BackPress = true;
+  }
+  previousBackState = BackState;
+  
+  // Read ADS1115 channel A0 and A1
+  adcRawA0 = ads.readADC_SingleEnded(0);
+  adcRawA1 = ads.readADC_SingleEnded(1);
+
+  // Convert ADC reading to volts
+   inputVoltageA0 = adcRawA0 * 0.1875f / 1000.0f;
+   inputVoltageA1 = adcRawA1 * 0.1875f / 1000.0f;
+
+  // Limit to expected range
+  if (inputVoltageA0 < 0.0f)
+      inputVoltageA0 = 0.0f;
+
+  if (inputVoltageA0 > 5.0f)
+        inputVoltageA0 = 5.0f;
+
+  // Convert voltage to 12-bit DAC value
+  uint16_t dacValue = (uint16_t)((inputVoltageA0 / 5.0f) * 4095.0f);
+  
+  //dacValue = 4095;
+
+  // Output through DAC
+  dac.setVoltage(dacValue, false);
+ #ifdef Debug
+  // Debug information
+  Serial.print(F("ADC Raw A0: "));
+  Serial.print(adcRawA0);
+ 
+  Serial.print(F("   Vin A0: "));
+  Serial.print(inputVoltageA0, 4);
+
+  Serial.print(F(" V   DAC: "));
+  Serial.print(dacValue);
+
+  Serial.print(F("   Vout: "));
+  Serial.print(((dacValue * 5.0) / 4095.0), 4);
+  Serial.print(F(" V"));
+
+  Serial.print(F("  ADC Raw A1: "));
+  Serial.print(adcRawA1);
+
+  Serial.print(F("  Vin A1: "));
+  Serial.print(inputVoltageA1, 4);
+  Serial.print(F(" V"));
+
+  Serial.print(F("  Corresponding Pressure: "));
+  Serial.print(inputVoltageA0 / 5 * 1000, 4);
+  Serial.println(F(" Torr."));
+
+  //handleButton();
+  #endif
+  updateOLED();
+  handleEncoder();
+  updateEncoderValue(encoder, value);
+  Serial.println(value);
+  if (ConfirmPress)
+  {
+    Serial.println(F("Confirm"));
+  }
+  if (BackPress)
+  {
+    Serial.println(F("Back"));
+  }
+}
+
+void updateOLED()
+{
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SH110X_WHITE);
+
+  if (inMainMenu)
+  //=========== Main Menu Layout ============
+  {
+    display.setCursor(0,0);
+    display.println(F("Main Menu"));
+
+    for (int i = 0; i < MainMenuSize; i++)
+    {
+      display.setCursor(0, 15 + i * 12);
+
+      if (i == menuIndex)
+        display.print(F("> "));
+      else
+        display.print(F(" "));
+
+      display.println(MainMenuItems[i]);
+    }
+  }
+  else
+  {
+    //========== Sub Menu 1 Layout ============
+    
+    if (inSubMenu1)
+    {
+      display.setCursor(0,0);
+      display.println(F("Menu Page 1"));
+      display.println(F("--------------"));
+
+      for (int i = 0; i < SubMenu1Size; i++)
+    {
+      display.setCursor(0, 15 + i * 12);
+
+      if (i == submenu1Index)
+        display.print(F("> "));
+      else
+        display.print(F(" "));
+
+      display.println(SubMenu1Items[i]);
+    }
+        
+    }
+    if (inSubMenu2)
+    {
+      //========= Sub Menu 2  Layout =========
+      display.setCursor(0,0);
+      display.println(F("Menu Page 2"));
+      display.println(F("---------------"));
+
+      for (int i = 0; i < SubMenu2Size; i++)
+      {
+        display.setCursor(0, 15 + i * 12);
+
+        if (i == submenu2Index)
+          display.print(F("> "));
+        else
+          display.print(F(" "));
+          display.println(SubMenu2Items[i]);
+      }
+    }
+    if (inPage1)
+    {
+      display.clearDisplay();
+      display.setCursor(0,0);
+      display.print(F("Ticks: "));
+      display.println(value);
+    }
+    if (inPage2)
+    {
+      display.setCursor(0,0);
+      display.println(F("A0 Voltage Input: "));
+      display.print(inputVoltageA0, 4);
+      display.println(F(" V"));
+      display.println(F("A1 Voltage Input: "));
+      display.print(inputVoltageA1, 4);
+      display.println(F(" V"));
+    }
+    if (inPage3)
+    {
+      display.setCursor(0,0);
+      display.println(F("Pressure Input: "));   
+      display.print(inputVoltageA0 / 5 * 1000, 4); 
+      display.print(F(" Torr."));
+    }
+    if (inPage4)
+    {
+      display.setCursor(0,0);
+      display.print(F("Blank Page"));
+    }
+    if (inPage5)
+    {
+      display.setCursor(0,0);
+      display.print(F("Blank Page"));
+    }
+    if (inPage6)
+    {
+      display.setCursor(0,0);
+      display.print(F("Blank Page"));
+    }
+    if (inPage7)
+    {
+      display.setCursor(0,0);
+      display.print(F("Blank Page"));
+    }
+    if (inPage8)
+    {
+      display.setCursor(0,0);
+      display.print(F("Blank Page"));
+    }
+  } 
+  #if DEMO_INTERRUPTS
+
+  // Wait quite some time to demonstrate that we can check for events fairly infrequently and still not miss them.
+  delay(10);
+  
+  #else
+
+  // With polling-style pin checking we can still read infrequently, but we need to poll the pins often enough.
+  for (int i = 0; i < 20; i++) 
+  {
+    encoder.checkPins(digitalRead(encoderPinA), digitalRead(encoderPinB));
+    delay(1);
+  }
+  
+  #endif
+  display.display();
+}
+
+void handleEncoder()
+{
+  if (millis() - lastDisplayUpdate > 50)
+  {
+    lastDisplayUpdate = millis();
+    updateOLED();
+  }
+
+  if (inMainMenu)
+  {
+    menuIndex = value;
+    if (menuIndex < 0) value = MainMenuSize - 1;
+    if (menuIndex >= MainMenuSize) value = 0;
+    if (ConfirmPress)
+    {
+      value = 0;
+      if (menuIndex == 0)
+      {
+        inMainMenu = false;
+        inSubMenu1 = true;
+        inSubMenu2 = false;
+      }
+      if (menuIndex == 1)
+      {
+        inMainMenu = false;
+        inSubMenu1 = false;
+        inSubMenu2 = true;
+      }
+    }
+  }
+  if (inSubMenu1)
+  {
+    submenu1Index = value;
+    if (submenu1Index < 0) value = SubMenu1Size - 1;
+    if (submenu1Index >= SubMenu1Size) value = 0;
+    if (BackPress)
+    {
+      inMainMenu = true;
+      inSubMenu1 = false;
+      inSubMenu2 = false;
+    }
+    if (ConfirmPress)
+    {
+      value = 0;
+      if (submenu1Index == 0)
+      {
+        inPage1 = true;
+      }
+      if (submenu1Index == 1)
+      {
+        inPage2 = true;
+      }
+      if (submenu1Index == 2)
+      {
+        inPage3 = true;
+      }
+      if (submenu1Index == 3)
+      {
+        inPage4 = true;
+      }
+
+      inSubMenu1 = false;
+    }
+  }
+  if (inSubMenu2)
+  {
+    submenu2Index = value;
+    if (submenu2Index < 0) value = SubMenu2Size - 1;
+    if (submenu2Index >= SubMenu2Size) value = 0;
+    if (BackPress)
+    {
+      inMainMenu = true;
+      inSubMenu1 = false;
+      inSubMenu2 = false;
+    }
+    if (ConfirmPress)
+    {
+      value = 0;
+      if (submenu2Index == 0)
+      {
+        inPage5 = true;
+      }
+      if (submenu2Index == 1)
+      {
+        inPage6 = true;
+      }
+      if (submenu2Index == 2)
+      {
+        inPage7 = true;
+      }
+      if (submenu2Index == 3)
+      {
+        inPage8 = true;
+      }
+
+      inSubMenu2 = false;
+    }
+  }
+  if (inPage1)
+  {
+    if (BackPress)
+    {
+      inPage1 = false;
+      inSubMenu1 = true;
+    }
+  }
+  if (inPage2)
+  {
+    if (BackPress)
+    {
+      inPage2 = false;
+      inSubMenu1 = true;
+    }
+  }
+  if (inPage3)
+  {
+    if (BackPress)
+    {
+      inPage3 = false;
+      inSubMenu1 = true;
+    }
+  }
+  if (inPage4)
+  {
+    if (BackPress)
+    {
+      inPage4 = false;
+      inSubMenu1 = true;
+    }
+  }
+  if (inPage5)
+  {
+    if (BackPress)
+    {
+      inPage5 = false;
+      inSubMenu2 = true;
+    }
+  }
+  if (inPage6)
+  {
+    if (BackPress)
+    {
+      inPage6 = false;
+      inSubMenu2 = true;
+    }
+  }
+  if (inPage7)
+  {
+    if (BackPress)
+    {
+      inPage7 = false;
+      inSubMenu2 = true;
+    }
+  }
+  if (inPage8)
+  {
+    if (BackPress)
+    {
+      inPage8 = false;
+      inSubMenu2 = true;
+    }
+  }
+}
